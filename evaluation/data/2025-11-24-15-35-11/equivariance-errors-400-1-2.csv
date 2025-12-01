@@ -1,0 +1,5 @@
+model,num_classes,num_ensemble,clf_error,l2_logits,epoch
+tabpfn,2,1,0.0,1.3445237874984741,400
+tabpfn,2,1,0.0,1.0797300338745117,400
+tabpfn,2,1,0.0,1.1364216804504395,400
+tabpfn,2,1,0.0,1.3078142404556274,400

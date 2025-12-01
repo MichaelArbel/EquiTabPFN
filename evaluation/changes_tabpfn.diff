@@ -1,0 +1,303 @@
+diff --git a/src/tabpfn/base.py b/src/tabpfn/base.py
+index fc42157..167cee8 100644
+--- a/src/tabpfn/base.py
++++ b/src/tabpfn/base.py
+@@ -62,6 +62,7 @@ def initialize_tabpfn_model(
+     which: Literal["classifier", "regressor"],
+     fit_mode: Literal["low_memory", "fit_preprocessors", "fit_with_cache"],
+     static_seed: int,
++    load_dict=True
+ ) -> tuple[PerFeatureTransformer, InferenceConfig, FullSupportBarDistribution | None]:
+     """Common logic to load the TabPFN model, set up the random state,
+     and optionally download the model.
+@@ -94,6 +95,7 @@ def initialize_tabpfn_model(
+             version="v2",
+             download=download,
+             model_seed=static_seed,
++            load_dict=load_dict
+         )
+         bar_distribution = None
+     else:
+@@ -106,6 +108,7 @@ def initialize_tabpfn_model(
+             version="v2",
+             download=download,
+             model_seed=static_seed,
++            load_dict=load_dict
+         )
+         bar_distribution = bardist
+ 
+diff --git a/src/tabpfn/classifier.py b/src/tabpfn/classifier.py
+index 5b18fc5..720a0ca 100644
+--- a/src/tabpfn/classifier.py
++++ b/src/tabpfn/classifier.py
+@@ -364,7 +364,8 @@ class TabPFNClassifier(ClassifierMixin, BaseEstimator):
+         self.random_state = random_state
+         self.n_jobs = n_jobs
+         self.inference_config = inference_config
+-
++        self.model_=None
++        self.config_= None
+     # TODO: We can remove this from scikit-learn lower bound of 1.6
+     def _more_tags(self) -> dict[str, Any]:
+         return {
+@@ -379,7 +380,7 @@ class TabPFNClassifier(ClassifierMixin, BaseEstimator):
+         return tags
+ 
+     @config_context(transform_output="default")  # type: ignore
+-    def fit(self, X: XType, y: YType) -> Self:
++    def fit(self, X: XType, y: YType, load_dict=True) -> Self:
+         """Fit the model.
+ 
+         Args:
+@@ -389,12 +390,14 @@ class TabPFNClassifier(ClassifierMixin, BaseEstimator):
+         static_seed, rng = infer_random_state(self.random_state)
+ 
+         # Load the model and config
+-        self.model_, self.config_, _ = initialize_tabpfn_model(
+-            model_path=self.model_path,
+-            which="classifier",
+-            fit_mode=self.fit_mode,
+-            static_seed=static_seed,
+-        )
++        if self.model_ is None:
++            self.model_, self.config_, _ = initialize_tabpfn_model(
++                model_path=self.model_path,
++                which="classifier",
++                fit_mode=self.fit_mode,
++                static_seed=static_seed,
++                load_dict=load_dict
++            )
+ 
+         # Determine device and precision
+         self.device_ = infer_device_and_type(self.device)
+diff --git a/src/tabpfn/inference.py b/src/tabpfn/inference.py
+index c88461f..2e40807 100644
+--- a/src/tabpfn/inference.py
++++ b/src/tabpfn/inference.py
+@@ -312,16 +312,18 @@ class InferenceEngineCachePreprocessing(InferenceEngine):
+             if self.force_inference_dtype is not None:
+                 X_full = X_full.type(self.force_inference_dtype)
+                 y_train = y_train.type(self.force_inference_dtype)  # type: ignore # noqa: PLW2901
+-
+-            MemoryUsageEstimator.reset_peak_memory_if_required(
+-                save_peak_mem=self.save_peak_mem,
+-                model=self.model,
+-                X=X_full,
+-                cache_kv=False,
+-                device=device,
+-                dtype_byte_size=self.dtype_byte_size,
+-                safety_factor=1.2,  # TODO(Arjun): make customizable
+-            )
++            try:
++                MemoryUsageEstimator.reset_peak_memory_if_required(
++                    save_peak_mem=self.save_peak_mem,
++                    model=self.model,
++                    X=X_full,
++                    cache_kv=False,
++                    device=device,
++                    dtype_byte_size=self.dtype_byte_size,
++                    safety_factor=1.2,  # TODO(Arjun): make customizable
++                )
++            except: 
++                pass
+ 
+             style = None
+ 
+@@ -329,12 +331,20 @@ class InferenceEngineCachePreprocessing(InferenceEngine):
+                 torch.autocast(device.type, enabled=autocast),
+                 torch.inference_mode(),
+             ):
+-                output = self.model(
+-                    *(style, X_full, y_train),
+-                    only_return_standard_out=only_return_standard_out,
+-                    categorical_inds=cat_ix,
+-                    single_eval_pos=len(y_train),
+-                )
++                try:
++                    output = self.model(
++                        *(style, X_full, y_train),
++                        only_return_standard_out=only_return_standard_out,
++                        categorical_inds=cat_ix,
++                        single_eval_pos=len(y_train),
++                    )
++                except:
++                    output = self.model(
++                        (style, X_full, y_train),
++                        only_return_standard_out=only_return_standard_out,
++                        categorical_inds=cat_ix,
++                        single_eval_pos=len(y_train),
++                    )
+ 
+             output = output if isinstance(output, dict) else output.squeeze(1)
+ 
+diff --git a/src/tabpfn/model/encoders.py b/src/tabpfn/model/encoders.py
+index b5a48e9..5e91320 100644
+--- a/src/tabpfn/model/encoders.py
++++ b/src/tabpfn/model/encoders.py
+@@ -502,7 +502,6 @@ class NanHandlingEncoderStep(SeqEncStep):
+         # replace nans with the mean of the corresponding feature
+         x = x.clone()  # clone to avoid inplace operations
+         x[nan_mask] = self.feature_means_.unsqueeze(0).expand_as(x)[nan_mask]
+-
+         return x, nans_indicator
+ 
+ 
+diff --git a/src/tabpfn/model/loading.py b/src/tabpfn/model/loading.py
+index 7253e8c..30e2f5e 100644
+--- a/src/tabpfn/model/loading.py
++++ b/src/tabpfn/model/loading.py
+@@ -404,6 +404,7 @@ def load_model_criterion_config(
+     version: Literal["v2"] = "v2",
+     download: bool,
+     model_seed: int,
++    load_dict=True
+ ) -> tuple[
+     PerFeatureTransformer,
+     nn.BCEWithLogitsLoss | nn.CrossEntropyLoss | FullSupportBarDistribution,
+@@ -464,7 +465,7 @@ def load_model_criterion_config(
+                 f"Then place it at: {model_path}",
+             ) from res[0]
+ 
+-    loaded_model, criterion, config = load_model(path=model_path, model_seed=model_seed)
++    loaded_model, criterion, config = load_model(path=model_path, model_seed=model_seed, load_dict=load_dict)
+     loaded_model.cache_trainset_representation = cache_trainset_representation
+     if check_bar_distribution_criterion and not isinstance(
+         criterion,
+@@ -630,6 +631,7 @@ def load_model(
+     *,
+     path: Path,
+     model_seed: int,
++    load_dict=True
+ ) -> tuple[
+     PerFeatureTransformer,
+     nn.BCEWithLogitsLoss | nn.CrossEntropyLoss | FullSupportBarDistribution,
+@@ -757,8 +759,9 @@ def load_model(
+             else False
+         ),
+     )
+-
+-    model.load_state_dict(state_dict)
++    if load_dict:
++        model.load_state_dict(state_dict)
++    
+     model.eval()
+     return model, loss_criterion, config
+ 
+diff --git a/src/tabpfn/model/transformer.py b/src/tabpfn/model/transformer.py
+index 181feb3..e5f6ebc 100644
+--- a/src/tabpfn/model/transformer.py
++++ b/src/tabpfn/model/transformer.py
+@@ -308,7 +308,7 @@ class PerFeatureTransformer(nn.Module):
+         self.dag_pos_enc_dim = dag_pos_enc_dim
+         self.cached_feature_positional_embeddings: torch.Tensor | None = None
+         self.seed = seed if seed is not None else random.randint(0, 1_000_000)  # noqa: S311
+-
++        self.preprocessor = None
+     def reset_save_peak_mem_factor(self, factor: int | None = None) -> None:
+         """Sets the save_peak_mem_factor for all layers.
+ 
+@@ -394,6 +394,7 @@ class PerFeatureTransformer(nn.Module):
+             "train_y",
+             "test_x",
+             "single_eval_pos",
++            "encode_only"
+         }
+         spurious_kwargs = set(kwargs.keys()) - supported_kwargs
+         assert not spurious_kwargs, spurious_kwargs
+@@ -430,6 +431,7 @@ class PerFeatureTransformer(nn.Module):
+         data_dags: list[Any] | None = None,
+         categorical_inds: list[int] | None = None,
+         half_layers: bool = False,
++        encode_only: bool = False,
+     ) -> Any | dict[str, torch.Tensor]:
+         """The core forward pass of the model.
+ 
+@@ -585,6 +587,9 @@ class PerFeatureTransformer(nn.Module):
+ 
+         for k in x:
+             x[k] = einops.rearrange(x[k], "b s f n -> s (b f) n")
++        
++        if self.preprocessor:
++            x = self.preprocessor(x, single_eval_pos=single_eval_pos_)
+ 
+         embedded_x = einops.rearrange(
+             self.encoder(
+@@ -597,7 +602,9 @@ class PerFeatureTransformer(nn.Module):
+             b=embedded_y.shape[0],
+         )  # b s f 1 -> b s f e
+         del x
++        
+ 
++        ### This basically adds pos encoding to x. 
+         embedded_x, embedded_y = self.add_embeddings(
+             embedded_x,
+             embedded_y,
+@@ -613,9 +620,11 @@ class PerFeatureTransformer(nn.Module):
+         )
+         del data_dags
+ 
+-        # b s f e + b s 1 e -> b s f+1 e
+-        embedded_input = torch.cat((embedded_x, embedded_y.unsqueeze(2)), dim=2)
++        if len(embedded_y.shape) < len(embedded_x.shape):
++            embedded_y = embedded_y.unsqueeze(2)
+ 
++        # b s f e + b s 1 e -> b s f+1 e
++        embedded_input = torch.cat((embedded_x, embedded_y), dim=2)
+         if torch.isnan(embedded_input).any():
+             raise ValueError(
+                 f"There should be no NaNs in the encoded x and y."
+@@ -635,7 +644,10 @@ class PerFeatureTransformer(nn.Module):
+             half_layers=half_layers,
+             cache_trainset_representation=self.cache_trainset_representation,
+         )  # b s f+1 e -> b s f+1 e
++        if encode_only:
++            return encoder_out
+ 
++        #print(lol)
+         # If we are using a decoder
+         if self.transformer_decoder:
+             assert not half_layers
+@@ -676,7 +688,7 @@ class PerFeatureTransformer(nn.Module):
+             train_encoder_out = encoder_out[:, :single_eval_pos_, -1].transpose(0, 1)
+             output_decoded["train_embeddings"] = train_encoder_out
+             output_decoded["test_embeddings"] = test_encoder_out
+-
++        #print(lol)
+         return output_decoded
+ 
+     def add_embeddings(  # noqa: C901, PLR0912
+diff --git a/src/tabpfn/utils.py b/src/tabpfn/utils.py
+index e25e789..f9f1500 100644
+--- a/src/tabpfn/utils.py
++++ b/src/tabpfn/utils.py
+@@ -631,17 +631,20 @@ def update_encoder_outlier_params(
+         return
+ 
+     encoder = model.encoder
+-    norm_layer = next(
+-        e for e in encoder if "InputNormalizationEncoderStep" in str(e.__class__)
+-    )
+-    norm_layer.remove_outliers = (remove_outliers_std is not None) and (
+-        remove_outliers_std > 0
+-    )
+-    if norm_layer.remove_outliers:
+-        norm_layer.remove_outliers_sigma = remove_outliers_std
++    try:
++        norm_layer = next(
++            e for e in encoder if "InputNormalizationEncoderStep" in str(e.__class__)
++        )
++        norm_layer.remove_outliers = (remove_outliers_std is not None) and (
++            remove_outliers_std > 0
++        )
++        if norm_layer.remove_outliers:
++            norm_layer.remove_outliers_sigma = remove_outliers_std
+ 
+-    norm_layer.seed = seed
+-    norm_layer.reset_seed()
++        norm_layer.seed = seed
++        norm_layer.reset_seed()
++    except:
++        pass
+ 
+ 
+ def _transform_borders_one(

@@ -1,0 +1,35 @@
+y_encoder: 
+  name: 'equitabpfn.models.encoders.EquiOneHotAndLinear'
+  kwargs:
+    num_classes: 10
+bkbn:
+  name: 'equitabpfn.models.equitabpfn.EquiTabPFN'
+  kwargs:
+    emsize: 512
+    nlayers: 6
+    dropout: 0.0
+    nhead: 4
+    nhid_factor: 2
+    init_method: "xavier-uniform"
+    recompute_attn: True
+    pre_norm: False
+    efficient_eval_masking: True
+    input_normalization: False
+    tabpfn_zero_weights: False # True in original code, but false in the new one.  
+    output_features: 'all_features'
+    equivariant_encoder: False
+    feature_mask_mode: "Bq2Bk" # Recommended options: none, Bq2Bk, Bq2Ak
+    compile_model: False
+    decoder_kwarg:
+      name: equitabpfn.models.decoders.KDEDecoder
+      kwargs:
+        bw: 1.0
+        kernel: gaussian
+        pointwise_mlp:
+          dim_feedforward: 512
+          with_layer_norm: true
+          layer_norm_eps: 1
+          activation: gelu
+          dropout: 0.0
+logits: True
+

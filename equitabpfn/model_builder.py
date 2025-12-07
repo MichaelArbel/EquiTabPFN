@@ -59,10 +59,14 @@ def get_model(config, model_info):
     else:
         emsize = config["bkbn"]["kwargs"]["emsize"]
 
-        y_encoder = instantiate(config["y_encoder"]["name"])(
+        def fix(s: str):
+            return s.replace("ktabpfn.", "equitabpfn.")
+        y_encoder = instantiate(fix(config["y_encoder"]["name"]))(
             emsize=emsize, **config["y_encoder"]["kwargs"]
         )
-        model = instantiate(config["bkbn"]["name"])(
+        s = "equitabpfn.models.equitabpfn.BiAttentionEncoderLayer"
+        config["bkbn"]["kwargs"]["decoder_kwarg"]["name"] = fix(config["bkbn"]["kwargs"]["decoder_kwarg"]["name"])
+        model = instantiate("equitabpfn.models.equitabpfn.EquiTabPFN")(
             y_encoder_layer=y_encoder,
             n_features=num_features,
             n_out=n_out,

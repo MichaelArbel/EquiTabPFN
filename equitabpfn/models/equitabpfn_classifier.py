@@ -1,9 +1,21 @@
+from huggingface_hub import snapshot_download
+
+from equitabpfn.model_builder import load_model
 from mothernet import TabPFNClassifier
 import os
 from pathlib import Path
 import torch
 
 
+def download_model(name: str, local_path: Path):
+    # downloads the model from huggingface into `local_path` folder
+    snapshot_download(
+        repo_id="kernelpfn/checkpoints",
+        repo_type="dataset",
+        allow_patterns=f"{name}*",
+        local_dir=local_path,
+        force_download=False,
+    )
 
 class EquiTabPFNClassifier(TabPFNClassifier):
     def __init__(

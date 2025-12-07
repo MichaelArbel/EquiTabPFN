@@ -9,4 +9,5 @@ dependencies = [
     "tabpfn>=0.2.0",
     "numpy>=1.24.0",
     "mlflow>=3.7.0",
+    "gpytorch>=1.14.3",
 ]

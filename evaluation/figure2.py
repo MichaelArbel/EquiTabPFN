@@ -9,11 +9,10 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from mothernet import TabPFNClassifier
+from tabpfn import TabPFNClassifier
+from tabpfn.constants import ModelVersion
 
 from equitabpfn.evaluation.equivariance_error import permute_y
-from sklearn.preprocessing import MinMaxScaler
-from scipy.spatial import Voronoi, voronoi_plot_2d
 
 from equitabpfn.utils import figure_path
 
@@ -51,61 +50,34 @@ def make_grid(n: int):
     return pts
 
 
-def pred_equi(classifier, X_train, y_train, X_test):
-    # compute predictions from equipfn
-
-    classifier.fit(X_train, y_train)
-    with torch.no_grad():
-        y_eval, p_eval = classifier.predict(
-            X_test,
-            return_winning_probability=True,
-        )
-    return y_eval
-
-
-def compute_tabpfn(X_train, y_train, sigma, X_test):
+def compute_predictions(classifier, X_train, X_test, y_train, sigma):
+    """Compute predictions for a given classifier with permuted labels."""
     y_train_perm = permute_y(torch.Tensor(y_train), sigma).numpy()
-    from mothernet.prediction.tabpfn import TabPFNClassifier as TabPFNv1
 
-    classifier = TabPFNv1(device="cpu", N_ensemble_configurations=1)
     classifier.fit(X_train, y_train_perm)
-    y_eval, p_eval = classifier.predict(X_test, return_winning_probability=True)
+
+    # Try predict with return_winning_probability for compatibility
+    try:
+        y_eval, p_eval = classifier.predict(X_test, return_winning_probability=True)
+    except TypeError:
+        # If classifier doesn't support return_winning_probability, use simple predict
+        y_eval = classifier.predict(X_test)
+
+    # Unpermute the predictions
     y_eval = permute_y(torch.Tensor(y_eval), np.argsort(sigma)).numpy()
     return y_eval
-
-
-def compute_tabpfn_v2(X_train, X_test, y_train, sigma):
-    # from tabpfn import TabPFNClassifier as TabPFNv2
-    y_train_perm = permute_y(torch.Tensor(y_train), sigma).numpy()
-
-    from tabpfn_client import init
-    from tabpfn_client import TabPFNClassifier as TabPFNv2
-
-    classifier = TabPFNv2(n_estimators=1, paper_version=True)
-    classifier.fit(X_train, y_train_perm)
-    y_eval = classifier.predict(X_test)
-    y_eval = permute_y(torch.Tensor(y_eval), np.argsort(sigma)).numpy()
-    return y_eval
-
-
-def compute_equi_tabpfn(X_train, X_test, y_train, sigma):
-    equipfn_classifier = EquiTabPFNClassifier(epoch=1200)
-
-    y_train_perm = permute_y(torch.Tensor(y_train), sigma).numpy()
-
-    equipfn_classifier.fit(X_train, y_train_perm)
-    with torch.no_grad():
-        y_eval, p_eval = equipfn_classifier.predict(
-            X_test,
-            return_winning_probability=True,
-        )
-
-    return permute_y(torch.Tensor(y_eval), np.argsort(sigma)).numpy()
 
 
 def plot(name: str, generate_fun, N: int = 1600):
     seeds = [0, 1, 2]
-    fig, axes = plt.subplots(3, 3, figsize=(7, 4.5))
+    classifiers = {
+        "TabPFN-v2": TabPFNClassifier.create_default_for_version(ModelVersion.V2),
+        "TabPFN-v2.5": TabPFNClassifier.create_default_for_version(ModelVersion.V2_5),
+        "EquiTabPFN": EquiTabPFNClassifier(epoch=1200),
+    }
+    n_methods = len(classifiers)
+
+    fig, axes = plt.subplots(n_methods, 3, figsize=(7, 4.5))
 
     # X_test = make_grid(1600)
     X_test = make_grid(N)
@@ -113,94 +85,64 @@ def plot(name: str, generate_fun, N: int = 1600):
     X_train = generate_fun(N)
     y_train = np.arange(N)
 
-    do_compute_tabpfn_v2 = True
     recompute = True
     if recompute:
         # compute predictions for all methods
-        y_eval_tabpfn = {}
-        y_eval_tabpfn_v2 = {}
-        y_eval_equitabpfn = {}
+        y_eval_dict = {method_name: {} for method_name in classifiers.keys()}
+
         for i, seed in enumerate(seeds):
             np.random.seed(i)
             sigma = np.random.permutation(N)
-            y_eval_tabpfn[i] = compute_tabpfn(
-                X_train=X_train, X_test=X_test, y_train=y_train, sigma=sigma
-            )
 
-            if do_compute_tabpfn_v2:
-                y_eval_tabpfn_v2[i] = compute_tabpfn_v2(
-                    X_train=X_train, X_test=X_test, y_train=y_train, sigma=sigma
+            for method_name, classifier in classifiers.items():
+                print(f"Computing {method_name} for seed {i}")
+                y_eval_dict[method_name][i] = compute_predictions(
+                    classifier=classifier,
+                    X_train=X_train,
+                    X_test=X_test,
+                    y_train=y_train,
+                    sigma=sigma
                 )
 
-            y_eval_equitabpfn[i] = compute_equi_tabpfn(
-                X_train,
-                X_test,
-                y_train,
-                sigma,
-            )
-
         with open(data_root / f"{name}-multiclass-voronoi.pkl", "wb") as f:
-            pickle.dump(
-                {
-                    "y_eval_equitabpfn": y_eval_equitabpfn,
-                    "y_eval_tabpfn_v2": y_eval_tabpfn_v2,
-                    "y_eval_tabpfn": y_eval_tabpfn,
-                },
-                f,
-            )
+            pickle.dump(y_eval_dict, f)
 
     with open(data_root / f"{name}-multiclass-voronoi.pkl", "rb") as f:
         # The protocol version used is detected automatically, so we do not
         # have to specify it.
-        data = pickle.load(f)
-        y_eval_equitabpfn = data["y_eval_equitabpfn"]
-        y_eval_tabpfn_v2 = data["y_eval_tabpfn_v2"]
-        y_eval_tabpfn = data["y_eval_tabpfn"]
+        y_eval_dict = pickle.load(f)
 
     # plot for all methods
-    for i, seed in enumerate(seeds):
-        np.random.seed(i)
-        sigma = np.random.permutation(N)
-        axes[0][i].set_box_aspect(aspect=1)
-        axes[0][i].scatter(
-            X_test[:, 0], X_test[:, 1], c=y_eval_tabpfn[i], cmap=cmap, marker="."
-        )
-        axes[0][i].scatter(X_train[:, 0], X_train[:, 1], c="black", marker="x")
-        axes[0][i].set_title(f"Targets permuted with $\sigma_{i}$")
-        axes[0][i].set_xticks([])
-        axes[0][i].set_yticks([])
-        if i == 0:
-            axes[0][i].set_ylabel("TabPFN")
+    method_names = list(classifiers.keys())
+    for row_idx, method_name in enumerate(method_names):
+        for i, seed in enumerate(seeds):
+            np.random.seed(i)
 
-        if do_compute_tabpfn_v2:
-            axes[1][i].scatter(
-                X_test[:, 0], X_test[:, 1], c=y_eval_tabpfn_v2[i], cmap=cmap, marker="."
+            # axes[row_idx][i].set_box_aspect(aspect=1)
+            axes[row_idx][i].scatter(
+                X_test[:, 0], X_test[:, 1], c=y_eval_dict[method_name][i], cmap=cmap,
+                marker=".", s=20,
             )
-            axes[1][i].scatter(X_train[:, 0], X_train[:, 1], c="black", marker="x")
-            axes[1][i].set_xticks([])
-            axes[1][i].set_yticks([])
-            if i == 0:
-                axes[1][i].set_ylabel("TabPFNv2")
+            axes[row_idx][i].scatter(X_train[:, 0], X_train[:, 1], c="black", marker="x")
 
-        axes[2][i].scatter(
-            X_test[:, 0], X_test[:, 1], c=y_eval_equitabpfn[i], cmap=cmap, marker="."
-        )
-        axes[2][i].scatter(X_train[:, 0], X_train[:, 1], c="black", marker="x")
-        # axes[1][i].set_title(f"EquiTabPFN Seed = {i}")
-        axes[2][i].set_xticks([])
-        axes[2][i].set_yticks([])
-        if i == 0:
-            axes[2][i].set_ylabel("EquiTabPFN")
+            if row_idx == 0:
+                axes[row_idx][i].set_title(f"Targets permuted with $\sigma_{i}$")
+
+            axes[row_idx][i].set_xticks([])
+            axes[row_idx][i].set_yticks([])
+
+            if i == 0:
+                axes[row_idx][i].set_ylabel(method_name)
 
 
 if __name__ == "__main__":
 
     # load equipfn model
 
-    # plot(make_S2)
-    # plt.tight_layout()
-    # plt.savefig(figure_path() / "boundary-s2.pdf")
-    # plt.show()
+    plot(name="S2", generate_fun=make_S2)
+    plt.tight_layout()
+    plt.savefig(figure_path() / "boundary-s2.pdf")
+    plt.show()
 
     plot(
         name="grid",

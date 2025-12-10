@@ -1,6 +1,6 @@
 from huggingface_hub import snapshot_download
 
-from equitabpfn.model_builder import load_model
+from equitabpfn.model_builder import load_model_from_name
 from mothernet import TabPFNClassifier
 import os
 from pathlib import Path
@@ -41,7 +41,7 @@ class EquiTabPFNClassifier(TabPFNClassifier):
         model_string = "train"
         epoch = -1
         model_key = model_string + "|" + str(device) + "|" + str(epoch)
-        model, args = load_model(model_path, device, verbose=False)
+        model, args = load_model_from_name(root=checkpoint_path, model_name="equitabpfn")
 
         max_num_classes = max_class
         args["prior"]["classification"]["max_num_classes"] = max_num_classes

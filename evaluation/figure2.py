@@ -139,10 +139,10 @@ if __name__ == "__main__":
 
     # load equipfn model
 
-    plot(name="S2", generate_fun=make_S2)
-    plt.tight_layout()
-    plt.savefig(figure_path() / "boundary-s2.pdf")
-    plt.show()
+    # plot(name="S2", generate_fun=make_S2)
+    # plt.tight_layout()
+    # plt.savefig(figure_path() / "boundary-s2.pdf")
+    # plt.show()
 
     plot(
         name="grid",

@@ -70,7 +70,7 @@ python equitabpfn/main.py \
 ```python
 
 checkpoint_path = 'data/models'
-from equitabpfn.models.model_builder import load_model_from_name
+from equitabpfn.model_builder import load_model_from_name
 model, config = load_model_from_name(root=checkpoint_path, model_name="equitabpfn")
 
 ```
